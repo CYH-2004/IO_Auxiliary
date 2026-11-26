@@ -1,0 +1,497 @@
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 1   
+
+
+C251 COMPILER V5.60.0, COMPILATION OF MODULE CherryPi_aux
+OBJECT MODULE PLACED IN .\Objects\CherryPi_aux.obj
+COMPILER INVOKED BY: D:\Software_D\Keil_v5\C251\BIN\C251.EXE CherryPi_Aux\CherryPi_aux.c XSMALL INTR2 BROWSE INCDIR(.\Li
+                    -brary;.\Basic;.\Core;.\CherryPi_Aux) DEBUG PRINT(.\Listings\CherryPi_aux.lst) TABS(2) OBJECT(.\Objects\CherryPi_aux.obj)
+                    - 
+
+stmt  level    source
+
+    1          #include "CherryPi_aux.h"
+    2          #include "SysConfig.h"
+    3          
+    4          #include "PWMA.h"
+    5          #include "Uart1.h"
+    6          #include "IIC_Slave.h"
+    7          
+    8          #include "Timer.h"
+    9          
+   10          #include <stdio.h>
+   11          
+   12          /*
+   13           *  [固件ID寄存器]
+   14          */
+   15          #define ID_REG_ADDR         0x0003
+   16          #define ID_REG_SIZE         0x0004
+   17          #define ID_REG_VALUE_H      0xBD00  // B:B版本、D:适用于CheeryPi-TFT的定制版
+   18          #define ID_REG_VALUE_L      0x0170
+   19          
+   20          /*
+   21           *  [PWM控制寄存器]
+   22          */
+   23          
+   24          // 灯丝 PWM控制寄存器
+   25          #define LED_PWM_REG_ADDR    0x0010
+   26          #define LED_PWM_REG_SIZE    0x0001  //1字节
+   27          
+   28          // 背光 PWM控制寄存器
+   29          #define BLK_PWM_REG_ADDR    0x0012
+   30          #define BLK_PWM_REG_SIZE    0x0001  //1字节
+   31          
+   32          /*
+   33           *  [端口数据及控制寄存器]
+   34           *  采用16位寄存器框架，以便于移植至STM32等其他使用16位端口数据寄存器的MCU
+   35          */
+   36          
+   37          // P0、P1 端口数据寄存器
+   38          #define IO_REG_0_ADDR         0x0020
+   39          #define IO_REG_0_SIZE         0x0002
+   40          
+   41          // P0、P1 端口模式配置寄存器
+   42          #define IO_MODE_REG_0_ADDR    0x0022
+   43          #define IO_MODE_REG_0_SIZE    0x0008
+   44          
+   45          // P3、P2 端口数据寄存器
+   46          #define IO_REG_1_ADDR         0x0030
+   47          #define IO_REG_1_SIZE         0x0002
+   48          
+   49          // P3、P2 端口模式配置寄存器
+   50          #define IO_MODE_REG_1_ADDR    0x0032
+   51          #define IO_MODE_REG_1_SIZE    0x0008
+   52          
+   53          // 休眠控制寄存器
+   54          #define SLEEP_REG_ADDR        0x00F0
+   55          #define SLEEP_REG_SIZE        0x0001
+   56          
+   57          /*
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 2   
+
+   58           *  [手动IO控制]
+   59          */
+   60          
+   61          sbit    LED_main = P1^5;    // 陶瓷灯丝
+   62          sbit    LED_sign = P1^4;    // 3.3V指示灯
+   63          sbit    LCD_BKL = P1^3;     // LCD背光
+   64          sbit    PIN_INT = P3^6;     // 中断唤醒
+   65          
+   66          uint8_t aux_reg[REG_COUNT]; // 虚拟寄存器
+   67          
+   68          char str_buf[256];          // 临时字符串缓冲区
+   69          
+   70          void cherrypi_aux(void);
+   71          uint8_t get_reg_data_16(uint16_t reg_addr, uint8_t *reg_data_p, uint8_t reg_num);
+   72          uint8_t set_reg_data_16(uint16_t reg_addr, uint8_t *reg_data_p, uint8_t reg_num);
+   73          
+   74          uint8_t set_P1_mode(uint8_t io_mode, uint8_t io_index);
+   75          uint8_t set_P3_mode(uint8_t io_mode, uint8_t io_index);
+   76          
+   77          void start_sleep_mode(void);
+   78          
+   79          // 辅助控制器主程序
+   80          void cherrypi_aux(void)
+   81          {
+   82   1          uint8_t data_temp8;
+   83   1          uint16_t data_temp16;
+   84   1          uint16_t i;
+   85   1      
+   86   1          // uint8_t *reg_buf;
+   87   1          iic_slave_data_info_t *data_info;
+   88   1      
+   89   1          // 配置INT引脚模式
+   90   1          P3M0 |= 0x40; P3M1 |= 0x40;     // 配置P3.6为开漏输出模式
+   91   1          P3PU |= 0x40;                   // 启用P3.6内部上拉电阻
+   92   1      
+   93   1          // 初始化iic从机驱动
+   94   1          iic_salve_init(IIC_SLAVE_ADDR, aux_reg, REG_COUNT);
+   95   1      
+   96   1          // 初始化寄存器组
+   97   1          for(i = 0; i < REG_COUNT; i++)
+   98   1          {
+   99   2              aux_reg[i] = 0x00;
+  100   2          }
+  101   1          aux_reg[IO_REG_0_ADDR] = 0xFF;
+  102   1          aux_reg[IO_REG_0_ADDR + 1] = 0xFF;
+  103   1          aux_reg[IO_REG_1_ADDR] = 0xFF;
+  104   1          aux_reg[IO_REG_1_ADDR + 1] = 0xFF;
+  105   1      
+  106   1          // 载入固件ID
+  107   1          aux_reg[ID_REG_ADDR] =(ID_REG_VALUE_H >> 8) & 0x00FF;
+  108   1          aux_reg[ID_REG_ADDR + 1] = ID_REG_VALUE_H & 0x00FF;
+  109   1          aux_reg[ID_REG_ADDR + 2] = (ID_REG_VALUE_L >> 8) & 0x00FF;
+  110   1          aux_reg[ID_REG_ADDR + 3] = ID_REG_VALUE_L & 0x00FF;
+  111   1          
+  112   1          // 开启驱动（开IIC中断）
+  113   1          if(iic_slave_start() == 0)
+  114   1          {
+  115   2              sprintf(str_buf, "[STC_AUX]CherryPi_Aux Start(%04x%04x)", ID_REG_VALUE_H, ID_REG_VALUE_L);
+  116   2              PrintString1(str_buf);
+  117   2          } 
+  118   1          else PrintString1("[STC_AUX]CherryPi_Aux ERROR.\n");
+  119   1      
+  120   1          // 主任务处理
+  121   1          while(1)
+  122   1          {
+  123   2              // 获取待处理数据信息
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 3   
+
+  124   2              data_info = get_data_info();
+  125   2              if(data_info != NULL)
+  126   2              {
+  127   3                  // PrintString1("Received write request.\n");
+  128   3                  if(data_info->reg_addr == LED_PWM_REG_ADDR)         // 灯丝PWM控制寄存器
+  129   3                  {   
+  130   4                      data_temp8 = data_info->buf[0];
+  131   4                      data_temp16 = ((uint16_t)data_temp8 * PWM_PERIOD) / 255 ;
+  132   4                      SetPWM(3, data_temp16);
+  133   4                      UpdatePwm();
+  134   4                      set_reg_data_16(LED_PWM_REG_ADDR, &data_temp8, 1);  // 将缓冲区数据同步至寄存器组
+  135   4      
+  136   4                      // PrintString1("Updated LED.\n");
+  137   4                  }
+  138   3                  else if(data_info->reg_addr == BLK_PWM_REG_ADDR)    // 背光PWM控制寄存器
+  139   3                  {
+  140   4                      data_temp8 = data_info->buf[0];
+  141   4                      data_temp16 = ((uint16_t)data_temp8 * PWM_PERIOD) / 255 ;
+  142   4                      SetPWM(2, data_temp16);
+  143   4                      UpdatePwm();
+  144   4                      set_reg_data_16(BLK_PWM_REG_ADDR, &data_temp8, 1);  // 将缓冲区数据同步至寄存器组
+  145   4      
+  146   4                      // PrintString1("Updated BLK.\n");
+  147   4                  }
+  148   3                  else if(data_info->reg_addr == IO_REG_0_ADDR)         // 端口数据寄存器0
+  149   3                  {
+  150   4                      // 此处为临时设计（当前版本硬件设计上仅有P10、P11两个自由IO），等待后续重构
+  151   4                      data_temp8 = data_info->buf[0];
+  152   4                      P10 = data_temp8 & 0x01;
+  153   4                      P11 = data_temp8 & 0x02;
+  154   4      
+  155   4                      data_info->buf[0] = P1;
+  156   4                      data_info->buf[0] |= 0xFC;
+  157   4                      data_info->buf[1] = 0xFF;       // P0 端口未启用
+  158   4                      
+  159   4                      // 更新寄存器组
+  160   4                      set_reg_data_16(IO_REG_0_ADDR, data_info->buf, 2);
+  161   4      
+  162   4                      // PrintString1("Received P1 data write request.");
+  163   4                  }
+  164   3                  else if(data_info->reg_addr == IO_MODE_REG_0_ADDR)    // 端口模式配置寄存器0
+  165   3                  {
+  166   4                      // 此处为临时设计（当前版本硬件设计上仅有P10、P11两个自由IO），等待后续重构
+  167   4                      if(data_info->data_count >= 4)
+  168   4                      {
+  169   5                          data_temp8 = data_info->buf[3];
+  170   5                          set_P1_mode((data_temp8 & 0x0F), 0);
+  171   5                          set_P1_mode((data_temp8 & 0xF0) >> 4, 1);
+  172   5                          
+  173   5                          data_info->buf[0] = 0x00;
+  174   5                          data_info->buf[1] = 0x00;
+  175   5                          data_info->buf[2] = 0x00;
+  176   5      
+  177   5                          // 更新寄存器组
+  178   5                          set_reg_data_16(IO_MODE_REG_0_ADDR, data_info->buf, 4);
+  179   5      
+  180   5                          // PrintString1("Received P1 config write request.");
+  181   5                      }
+  182   4                  }
+  183   3                  else if(data_info->reg_addr == IO_REG_1_ADDR)         // 端口数据寄存器1
+  184   3                  {
+  185   4                      // 暂时仅P3.4、P3.5可用
+  186   4                      data_temp8 = data_info->buf[0];
+  187   4                      P34 = data_temp8 & 0x10;
+  188   4                      P35 = data_temp8 & 0x20;
+  189   4      
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 4   
+
+  190   4                      data_info->buf[0] = P3;
+  191   4                      data_info->buf[0] |= 0xCF;
+  192   4                      data_info->buf[1] = 0xFF;       // P2 端口未启用
+  193   4                      
+  194   4                      // 更新寄存器组
+  195   4                      set_reg_data_16(IO_REG_1_ADDR, data_info->buf, 2);
+  196   4      
+  197   4                      // PrintString1("Received P3 data write request.");
+  198   4                  }
+  199   3                  else if(data_info->reg_addr == IO_MODE_REG_1_ADDR)    // 端口模式配置寄存器1
+  200   3                  {
+  201   4                      // 暂时仅P3.4、P3.5可用
+  202   4                      if(data_info->data_count >= 4)
+  203   4                      {
+  204   5                          data_temp8 = data_info->buf[1];
+  205   5                          set_P3_mode((data_temp8 & 0x0F), 4);
+  206   5                          set_P3_mode((data_temp8 & 0xF0) >> 4, 5);
+  207   5                          
+  208   5                          data_info->buf[0] = 0x00;
+  209   5                          data_info->buf[2] = 0x00;
+  210   5                          data_info->buf[3] = 0x00;
+  211   5      
+  212   5                          // 更新寄存器组
+  213   5                          set_reg_data_16(IO_MODE_REG_1_ADDR, data_info->buf, 4);
+  214   5      
+  215   5                          // PrintString1("Received P3 config write request.");
+  216   5                      }
+  217   4                  }
+  218   3                  else if(data_info->reg_addr == SLEEP_REG_ADDR)  // 休眠控制寄存器
+  219   3                  {
+  220   4                      if(data_info->buf[0] == 0x01)
+  221   4                      {
+  222   5                          // 停止IIC从机
+  223   5                          iic_slave_stop();
+  224   5      
+  225   5                          LED_sign = 1;   // 关闭运行指示灯
+  226   5      
+  227   5                          // 等待INT引脚恢复高电平
+  228   5                          while(PIN_INT == 0)
+  229   5                          {
+  230   6                              PIN_INT = 1;
+  231   6                              n_ms(5);
+  232   6                          }
+  233   5      
+  234   5                          // 进入睡眠模式
+  235   5                          // PrintString1("Start sleep.\n");
+  236   5                          start_sleep_mode();
+  237   5      
+  238   5                          LED_sign = 0;   // 睡眠已唤醒，开启运行指示灯
+  239   5      
+  240   5                          // 恢复IIC从机
+  241   5                          // PrintString1("Exit sleep.\n");
+  242   5                          iic_slave_start();
+  243   5                      }
+  244   4                  }
+  245   3                  else
+  246   3                  {
+  247   4                      PrintString1("[STC_AUX]Invalid register address.\n");
+  248   4                  }
+  249   3      
+  250   3                  // 确认数据处理完成
+  251   3                  confirm_data_process();
+  252   3              }
+  253   2      
+  254   2              // 更新IO端口数据寄存器
+  255   2              data_temp8 = P1;
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 5   
+
+  256   2              data_temp8 &= 0x03;
+  257   2              data_temp8 |= 0xFC;
+  258   2              set_reg_data_16(IO_REG_0_ADDR, &data_temp8, 1);
+  259   2      
+  260   2              data_temp8 = P3;
+  261   2              data_temp8 &= 0x30;
+  262   2              data_temp8 |= 0xCF;
+  263   2              set_reg_data_16(IO_REG_1_ADDR, &data_temp8, 1);
+  264   2          }
+  265   1      }
+  266          
+  267          /**
+  268           * @name    get_reg_data_16
+  269           * @brief   获取指定寄存器数据
+  270           * @param   reg_addr：寄存器地址（16位寻址）
+  271           * @param   reg_data_p：读取缓冲区指针
+  272           * @param   reg_num：读取寄存器数量（字节）
+  273           * @return  0：成功     1：地址越界
+  274           * @date    日期：2026.11.19
+  275           * @author  作者：HAO
+  276           * @note    
+  277           */
+  278          uint8_t get_reg_data_16(uint16_t reg_addr, uint8_t *reg_data_p, uint8_t reg_num)
+  279          {
+  280   1          uint8_t i;
+  281   1          
+  282   1          if(reg_addr < REG_COUNT)
+  283   1          {
+  284   2              if((reg_addr + reg_num) < REG_COUNT)
+  285   2              {
+  286   3                  for(i = 0; i < reg_num; i++)
+  287   3                  {
+  288   4                      reg_data_p[i] = aux_reg[reg_addr + i];
+  289   4                  }
+  290   3              }
+  291   2              else
+  292   2              {
+  293   3                  return 1;
+  294   3              }
+  295   2          }
+  296   1          else
+  297   1          {
+  298   2              return 1;
+  299   2          }
+  300   1          return 0;
+  301   1      }
+  302          
+  303          /**
+  304           * @name    set_reg_data_16
+  305           * @brief   设置指定寄存器数据
+  306           * @param   reg_addr：寄存器地址（16位寻址）
+  307           * @param   reg_data_p：写入缓冲区指针
+  308           * @param   reg_num：写入寄存器数量（字节）
+  309           * @return  0：成功     1：地址越界
+  310           * @date    日期：2026.11.19
+  311           * @author  作者：HAO
+  312           * @note    
+  313           */
+  314          uint8_t set_reg_data_16(uint16_t reg_addr, uint8_t *reg_data_p, uint8_t reg_num)
+  315          {
+  316   1          uint8_t i;
+  317   1          
+  318   1          if(reg_addr < REG_COUNT)    // 越界检测
+  319   1          {
+  320   2              if((reg_addr + reg_num) < REG_COUNT)    // 越界检测
+  321   2              {
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 6   
+
+  322   3                  for(i = 0; i < reg_num; i++)
+  323   3                  {
+  324   4                      aux_reg[reg_addr + i] = reg_data_p[i];
+  325   4                  }
+  326   3              }
+  327   2              else
+  328   2              {
+  329   3                  return 1;
+  330   3              }
+  331   2          }
+  332   1          else
+  333   1          {
+  334   2              return 1;
+  335   2          }
+  336   1          return 0;
+  337   1      }
+  338          
+  339          /**
+  340           * @name    set_P1_mode
+  341           * @brief   设置P1端口模式
+  342           * @param   io_mode：IO模式    0-高阻输入    1-推挽输出    2-开漏输出    3-准双向     4-ADC
+  343           * @param   io_index：IO索引
+  344           * @return  0：成功     1：无效参数
+  345           * @date    日期：2026.11.19
+  346           * @author  作者：HAO
+  347           * @note    
+  348           */
+  349          uint8_t set_P1_mode(uint8_t io_mode, uint8_t io_index)
+  350          {
+  351   1          uint8_t io_value;
+  352   1      
+  353   1          if(io_index > 7) return 1;
+  354   1          else io_value = 0x01 << io_index;
+  355   1      
+  356   1          if(io_mode == 4)    // P0.0和P0.1可配置使用片内ADC
+  357   1          {
+  358   2              // ADC功能后续更新
+  359   2              return 1;
+  360   2          }
+  361   1          else    // 普通IO模式
+  362   1          {
+  363   2              switch(io_mode)
+  364   2              {
+  365   3                  case 0:     // 高阻输入
+  366   3                      P1M0 &= ~io_value;  P1M1 |= io_value; 
+  367   3                      break;
+  368   3                  case 1:     // 推挽输出
+  369   3                      P1M0 |= io_value;   P1M1 &= ~io_value; 
+  370   3                      break;
+  371   3                  case 2:     // 开漏输出
+  372   3                      P1M0 |= io_value;   P1M1 |= io_value;
+  373   3                      break;
+  374   3                  case 3:     // 准双向
+  375   3                      P1M0 &= ~io_value;  P1M1 &= ~io_value; 
+  376   3                      break;
+  377   3                  default:
+  378   3                      return 1;
+  379   3              }
+  380   2          }
+  381   1          return 0;
+  382   1      }
+  383          
+  384          /**
+  385           * @name    set_P3_mode
+  386           * @brief   设置P3端口模式
+  387           * @param   io_mode：IO模式    0-高阻输入    1-推挽输出    2-开漏输出    3-准双向
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 7   
+
+  388           * @param   io_index：IO索引
+  389           * @return  0：成功     1：无效参数
+  390           * @date    日期：2026.11.26
+  391           * @author  作者：HAO
+  392           * @note    
+  393           */
+  394          uint8_t set_P3_mode(uint8_t io_mode, uint8_t io_index)
+  395          {
+  396   1          uint8_t io_value;
+  397   1      
+  398   1          if(io_index > 7) return 1;
+  399   1          else io_value = 0x01 << io_index;
+  400   1      
+  401   1          switch(io_mode)
+  402   1          {
+  403   2              case 0:     // 高阻输入
+  404   2                  P3M0 &= ~io_value;  P3M1 |= io_value; 
+  405   2                  break;
+  406   2              case 1:     // 推挽输出
+  407   2                  P3M0 |= io_value;   P3M1 &= ~io_value; 
+  408   2                  break;
+  409   2              case 2:     // 开漏输出
+  410   2                  P3M0 |= io_value;   P3M1 |= io_value;
+  411   2                  break;
+  412   2              case 3:     // 准双向
+  413   2                  P3M0 &= ~io_value;  P3M1 &= ~io_value; 
+  414   2                  break;
+  415   2              default:
+  416   2                  return 1;
+  417   2          }
+  418   1          return 0;
+  419   1      }
+  420          
+  421          /**
+  422           * @name    start_sleep_mode
+  423           * @brief   进入睡眠模式
+  424           * @param   NULL
+  425           * @return  NULL
+  426           * @date    日期：2026.11.26
+  427           * @author  作者：HAO
+  428           * @note    
+  429           */
+  430          void start_sleep_mode(void)
+  431          {
+  432   1          EX2 = 1;    // 使能 INT2 下降沿中断
+  433   1          PD = 1;     // Sleep
+  434   1          _nop_();
+  435   1          _nop_();
+  436   1          _nop_();
+  437   1          _nop_();
+  438   1          _nop_();
+  439   1          _nop_();
+  440   1          _nop_();
+  441   1      
+  442   1      }
+  443          
+  444          /********************* INT2中断函数 *************************/
+  445          void INT2_int (void) interrupt 10     //进中断时已经清除标志
+  446          {
+  447   1          EX2 = 0;    //INT2 Disable
+  448   1      }
+
+
+Module Information          Static   Overlayable
+------------------------------------------------
+  code size            =      1042     ------
+  ecode size           =    ------     ------
+C251 COMPILER V5.60.0,  CherryPi_aux                                                       26/11/26  11:06:48  PAGE 8   
+
+  data size            =    ------     ------
+  idata size           =    ------     ------
+  pdata size           =    ------     ------
+  xdata size           =    ------     ------
+  xdata-const size     =    ------     ------
+  edata size           =       512          3
+  bit size             =    ------     ------
+  ebit size            =    ------     ------
+  bitaddressable size  =    ------     ------
+  ebitaddressable size =    ------     ------
+  far data size        =    ------     ------
+  huge data size       =    ------     ------
+  const size           =    ------     ------
+  hconst size          =       104     ------
+End of Module Information.
+
+
+C251 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

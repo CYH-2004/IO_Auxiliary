@@ -1,0 +1,229 @@
+C251 COMPILER V5.60.0,  PWMA                                                               26/11/26  11:06:48  PAGE 1   
+
+
+C251 COMPILER V5.60.0, COMPILATION OF MODULE PWMA
+OBJECT MODULE PLACED IN .\Objects\PWMA.obj
+COMPILER INVOKED BY: D:\Software_D\Keil_v5\C251\BIN\C251.EXE Basic\PWMA.c XSMALL INTR2 BROWSE INCDIR(.\Library;.\Basic;.
+                    -\Core;.\CherryPi_Aux) DEBUG PRINT(.\Listings\PWMA.lst) TABS(2) OBJECT(.\Objects\PWMA.obj) 
+
+stmt  level    source
+
+    1          #include "PWMA.h"
+    2          #include "Timer.h"
+    3          
+    4          #define PWM1_0      0x00  //P:P1.0  N:P1.1
+    5          #define PWM1_1      0x01  //P:P2.0  N:P2.1
+    6          #define PWM1_2      0x02  //P:P6.0  N:P6.1
+    7          
+    8          #define PWM2_0      0x00  //P:P1.2/P5.4  N:P1.3
+    9          #define PWM2_1      0x04  //P:P2.2  N:P2.3
+   10          #define PWM2_2      0x08  //P:P6.2  N:P6.3
+   11          
+   12          #define PWM3_0      0x00  //P:P1.4  N:P1.5
+   13          #define PWM3_1      0x10  //P:P2.4  N:P2.5
+   14          #define PWM3_2      0x20  //P:P6.4  N:P6.5
+   15          
+   16          #define PWM4_0      0x00  //P:P1.6  N:P1.7
+   17          #define PWM4_1      0x40  //P:P2.6  N:P2.7
+   18          #define PWM4_2      0x80  //P:P6.6  N:P6.7
+   19          #define PWM4_3      0xC0  //P:P3.4  N:P3.3
+   20          
+   21          #define ENO1P       0x01
+   22          #define ENO1N       0x02
+   23          #define ENO2P       0x04
+   24          #define ENO2N       0x08
+   25          #define ENO3P       0x10
+   26          #define ENO3N       0x20
+   27          #define ENO4P       0x40
+   28          #define ENO4N       0x80
+   29          
+   30          uint16_t PWM1_Duty;
+   31          uint16_t PWM2_Duty;
+   32          uint16_t PWM3_Duty;
+   33          uint16_t PWM4_Duty;
+   34          
+   35          uint8_t PWM1_inc_dir;
+   36          uint8_t PWM2_inc_dir;
+   37          uint8_t PWM3_inc_dir;
+   38          uint8_t PWM4_inc_dir;
+   39          
+   40          
+   41          void Write_PWMA_ASync(uint8_t addr, uint8_t dat)
+   42          {
+   43   1          while(HSPWMA_ADR & 0x80);
+   44   1          HSPWMA_DAT = dat;
+   45   1          HSPWMA_ADR = addr & 0x7F;
+   46   1      }
+   47          
+   48          void PWMA_Init(void)
+   49          {
+   50   1          PWMA_PSCRH = 0x00; //预分频器清0
+   51   1          PWMA_PSCRL = 0x00;
+   52   1      
+   53   1          PWMA_CCER1 = 0x00; //写 CCMRx 前必须先清零 CCxE 关闭通道
+   54   1          PWMA_CCER2 = 0x00;
+   55   1          PWMA_CCMR1 = 0x60; //通道模式配置
+   56   1          PWMA_CCMR2 = 0x60;
+   57   1          PWMA_CCMR3 = 0x60;
+   58   1          PWMA_CCMR4 = 0x60;
+C251 COMPILER V5.60.0,  PWMA                                                               26/11/26  11:06:48  PAGE 2   
+
+   59   1          PWMA_CCER1 = 0x55; //配置通道输出使能和极性
+   60   1          PWMA_CCER2 = 0x55;
+   61   1      
+   62   1          PWMA_CCMR1 |= 0x08; //开启PWMA_CCR1预转载功能(需要CC1E=1才可写)
+   63   1          PWMA_CCMR2 |= 0x08;
+   64   1          PWMA_CCMR3 |= 0x08;
+   65   1          PWMA_CCMR4 |= 0x08;
+   66   1      
+   67   1          PWMA_ARRH = (uint8_t)(PWM_PERIOD >> 8); //设置周期时间
+   68   1          PWMA_ARRL = (uint8_t)PWM_PERIOD;
+   69   1      
+   70   1          PWMA_ENO = 0x00;
+   71   1          // PWMA_ENO |= ENO1P; //使能输出
+   72   1          // PWMA_ENO |= ENO1N; //使能输出
+   73   1          // PWMA_ENO |= ENO2P; //使能输出
+   74   1          PWMA_ENO |= ENO2N; //使能输出
+   75   1          // PWMA_ENO |= ENO3P; //使能输出
+   76   1          PWMA_ENO |= ENO3N; //使能输出
+   77   1          // PWMA_ENO |= ENO4P; //使能输出
+   78   1          // PWMA_ENO |= ENO4N; //使能输出
+   79   1      
+   80   1          PWMA_PS = 0x00;  //高级 PWM 通道输出脚选择位
+   81   1          PWMA_PS |= PWM2_0; //选择 PWM2_0 通道
+   82   1          PWMA_PS |= PWM3_0; //选择 PWM3_0 通道
+   83   1      
+   84   1          PWMA_BKR = 0x80;  //使能主输出
+   85   1          PWMA_CR1 |= 0x81; //使能ARR预装载,开始计时
+   86   1      
+   87   1      
+   88   1          //PWM占空比初始化
+   89   1          PWM1_Duty = 0;
+   90   1          PWM2_Duty = 0;
+   91   1          PWM3_Duty = 0;
+   92   1          PWM4_Duty = 0;
+   93   1          
+   94   1          //PWM自动设置方向初始化
+   95   1          PWM1_inc_dir = 1;
+   96   1          PWM2_inc_dir = 1;
+   97   1          PWM3_inc_dir = 1;
+   98   1          PWM4_inc_dir = 1;
+   99   1      }
+  100          
+  101          void UpdatePwm(void)
+  102          {
+  103   1          PWMA_CCR1H = (uint8_t)(PWM1_Duty >> 8); //设置占空比时间
+  104   1          PWMA_CCR1L = (uint8_t)(PWM1_Duty);
+  105   1          PWMA_CCR2H = (uint8_t)(PWM2_Duty >> 8); //设置占空比时间
+  106   1          PWMA_CCR2L = (uint8_t)(PWM2_Duty);
+  107   1          PWMA_CCR3H = (uint8_t)(PWM3_Duty >> 8); //设置占空比时间
+  108   1          PWMA_CCR3L = (uint8_t)(PWM3_Duty);
+  109   1          PWMA_CCR4H = (uint8_t)(PWM4_Duty >> 8); //设置占空比时间
+  110   1          PWMA_CCR4L = (uint8_t)(PWM4_Duty);
+  111   1      }
+  112          
+  113          void PWM_auto_set(uint8_t PWM_channel)
+  114          {
+  115   1          switch(PWM_channel)
+  116   1          {
+  117   2          case 1:
+  118   2              //PWM1占空比自动调节
+  119   2              if(PWM1_inc_dir)
+  120   2              {
+  121   3                  if(PWM1_Duty < PWM_DUTY_MAX) PWM1_Duty++;
+  122   3                  else PWM1_inc_dir = 0;
+  123   3              }
+  124   2              else
+C251 COMPILER V5.60.0,  PWMA                                                               26/11/26  11:06:48  PAGE 3   
+
+  125   2              {
+  126   3                  if(PWM1_Duty > 0) PWM1_Duty--;
+  127   3                  else PWM1_inc_dir = 1;
+  128   3              }
+  129   2              break;
+  130   2          case 2:
+  131   2              //PWM2占空比自动调节
+  132   2              if(PWM2_inc_dir)
+  133   2              {
+  134   3                  if(PWM2_Duty < PWM_DUTY_MAX) PWM2_Duty++;
+  135   3                  else PWM2_inc_dir = 0;
+  136   3              }
+  137   2              else
+  138   2              {
+  139   3                  if(PWM2_Duty > 0) PWM2_Duty--;
+  140   3                  else PWM2_inc_dir = 1;
+  141   3              }
+  142   2              break;
+  143   2          case 3:
+  144   2              //PWM3占空比自动调节
+  145   2              if(PWM3_inc_dir)
+  146   2              {
+  147   3                  if(PWM3_Duty < PWM_DUTY_MAX) PWM3_Duty++;
+  148   3                  else PWM3_inc_dir = 0;
+  149   3              }
+  150   2              else
+  151   2              {
+  152   3                  if(PWM3_Duty > 0) PWM3_Duty--;
+  153   3                  else PWM3_inc_dir = 1;
+  154   3              }
+  155   2              break;
+  156   2          case 4:
+  157   2              //PWM4占空比自动调节
+  158   2              if(PWM3_inc_dir)
+  159   2              {
+  160   3                  if(PWM4_Duty < PWM_DUTY_MAX) PWM4_Duty++;
+  161   3                  else PWM4_inc_dir = 0;
+  162   3              }
+  163   2              else
+  164   2              {
+  165   3                  if(PWM4_Duty > 0) PWM4_Duty--;
+  166   3                  else PWM4_inc_dir = 1;
+  167   3              }
+  168   2              break;
+  169   2          }
+  170   1      }
+  171          
+  172          void SetPWM(uint8_t channel, uint16_t duty)
+  173          {
+  174   1          switch(channel)
+  175   1          {
+  176   2          case 1:
+  177   2              PWM1_Duty = duty;
+  178   2              break;
+  179   2          case 2:
+  180   2              PWM2_Duty = duty;
+  181   2              break;
+  182   2          case 3:
+  183   2              PWM3_Duty = duty;
+  184   2              break;
+  185   2          case 4:
+  186   2              PWM4_Duty = duty;
+  187   2              break;
+  188   2          }
+  189   1      }
+
+C251 COMPILER V5.60.0,  PWMA                                                               26/11/26  11:06:48  PAGE 4   
+
+
+Module Information          Static   Overlayable
+------------------------------------------------
+  code size            =       608     ------
+  ecode size           =    ------     ------
+  data size            =    ------     ------
+  idata size           =    ------     ------
+  pdata size           =    ------     ------
+  xdata size           =    ------     ------
+  xdata-const size     =    ------     ------
+  edata size           =        12     ------
+  bit size             =    ------     ------
+  ebit size            =    ------     ------
+  bitaddressable size  =    ------     ------
+  ebitaddressable size =    ------     ------
+  far data size        =    ------     ------
+  huge data size       =    ------     ------
+  const size           =    ------     ------
+  hconst size          =    ------     ------
+End of Module Information.
+
+
+C251 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

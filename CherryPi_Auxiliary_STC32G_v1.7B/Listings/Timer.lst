@@ -1,0 +1,109 @@
+C251 COMPILER V5.60.0,  Timer                                                              26/11/26  11:06:48  PAGE 1   
+
+
+C251 COMPILER V5.60.0, COMPILATION OF MODULE Timer
+OBJECT MODULE PLACED IN .\Objects\Timer.obj
+COMPILER INVOKED BY: D:\Software_D\Keil_v5\C251\BIN\C251.EXE Basic\Timer.c XSMALL INTR2 BROWSE INCDIR(.\Library;.\Basic;
+                    -.\Core;.\CherryPi_Aux) DEBUG PRINT(.\Listings\Timer.lst) TABS(2) OBJECT(.\Objects\Timer.obj) 
+
+stmt  level    source
+
+    1          #include "Timer.h"
+    2          
+    3          uint32_t systick_count;
+    4          
+    5          void n_ms(uint16_t x);
+    6          void n_ms_timer_0(void);
+    7          
+    8          void timer4_init(void);
+    9          uint32_t get_systick(void);
+   10          
+   11          //延时N-MS子程序********************************************************************
+   12          void n_ms(uint16_t x)
+   13          {
+   14   1        uint16_t i;
+   15   1          for(i=0;i<x;i++)
+   16   1          {
+   17   2          n_ms_timer_0();
+   18   2          }
+   19   1      }
+   20          
+   21          //定时器0的阻塞式1ms延时***********************************************************
+   22          void n_ms_timer_0(void)
+   23          {  
+   24   1          TMOD &= 0xF0; // 清除定时器0的控制位  
+   25   1          TMOD |= 0x01; // 设置定时器0为模式1（16位定时器/计数器模式）  
+   26   1        
+   27   1          TL0 = T0MS & 0x00ff;            //reload timer1 low byte
+   28   1          TH0 = T0MS >> 8;                //reload timer1 high byte
+   29   1      
+   30   1          TR0 = 1; // 启动定时器0  
+   31   1        
+   32   1          while(!TF0); // 等待定时器溢出
+   33   1          
+   34   1        
+   35   1          TF0 = 0; // 清除溢出标志  
+   36   1          TR0 = 0; // 停止定时器0  
+   37   1      }
+   38          
+   39          
+   40          // 配置使用T4作为systick生成器，时钟源选择系统时钟
+   41          // 当前配置为每1ms产生一次中断
+   42          
+   43          void timer4_init(void)
+   44          {
+   45   1          systick_count = 0;
+   46   1          
+   47   1          // T4做定时器，1T模式，关闭时钟输出；关闭T3
+   48   1          T4T3M = 0x20;
+   49   1      
+   50   1          // 设定时钟分频
+   51   1          TM4PS = 29;
+   52   1          
+   53   1          // 定时器预设
+   54   1          T4L = T4Tick_SET & 0xff;
+   55   1          T4H = (T4Tick_SET >> 8) & 0xff;
+   56   1          
+   57   1          //定时器4开始计数，允许中断
+   58   1          IE2 |= 0x40;
+C251 COMPILER V5.60.0,  Timer                                                              26/11/26  11:06:48  PAGE 2   
+
+   59   1          T4T3M |= 0x80;
+   60   1      }
+   61          
+   62          //T4中断服务程序
+   63          void TM4_Isr() interrupt 20
+   64          {
+   65   1          systick_count++;
+   66   1      }
+   67          
+   68          //获取systick值
+   69          //注意数据只有32位，单位为毫秒时49天就会发生溢出
+   70          uint32_t get_systick(void) 
+   71          {
+   72   1          return systick_count;
+   73   1      }
+
+
+Module Information          Static   Overlayable
+------------------------------------------------
+  code size            =       104     ------
+  ecode size           =    ------     ------
+  data size            =    ------     ------
+  idata size           =    ------     ------
+  pdata size           =    ------     ------
+  xdata size           =    ------     ------
+  xdata-const size     =    ------     ------
+  edata size           =         4     ------
+  bit size             =    ------     ------
+  ebit size            =    ------     ------
+  bitaddressable size  =    ------     ------
+  ebitaddressable size =    ------     ------
+  far data size        =    ------     ------
+  huge data size       =    ------     ------
+  const size           =    ------     ------
+  hconst size          =    ------     ------
+End of Module Information.
+
+
+C251 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

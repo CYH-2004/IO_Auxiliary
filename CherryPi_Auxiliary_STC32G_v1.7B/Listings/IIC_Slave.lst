@@ -1,0 +1,298 @@
+C251 COMPILER V5.60.0,  IIC_Slave                                                          26/11/26  11:06:48  PAGE 1   
+
+
+C251 COMPILER V5.60.0, COMPILATION OF MODULE IIC_Slave
+OBJECT MODULE PLACED IN .\Objects\IIC_Slave.obj
+COMPILER INVOKED BY: D:\Software_D\Keil_v5\C251\BIN\C251.EXE Basic\IIC_Slave.c XSMALL INTR2 BROWSE INCDIR(.\Library;.\Ba
+                    -sic;.\Core;.\CherryPi_Aux) DEBUG PRINT(.\Listings\IIC_Slave.lst) TABS(2) OBJECT(.\Objects\IIC_Slave.obj) 
+
+stmt  level    source
+
+    1          #include "IIC_Slave.h"
+    2          #include "Uart1.h"
+    3          #include "Timer.h"  // 用于记录接收时间戳
+    4          
+    5          bit isda;           //设备地址标志
+    6          bit isma_h;         //存储地址高位标志
+    7          bit isma_l;         //存储地址低位标志
+    8          
+    9          static uint16_t addr_target;
+   10          static uint16_t addr_target_temp;
+   11          
+   12          static uint8_t *storage_target;    // 存储器指针
+   13          static uint16_t storage_size;      // 存储器大小
+   14          
+   15          // 缓冲事件记录
+   16          volatile uint8_t data_count_temp;
+   17          volatile uint8_t buf_count;
+   18          volatile uint8_t buf_head_pointer;
+   19          volatile uint8_t buf_tail_pointer;
+   20          iic_slave_data_info_t write_buf_info[WRITE_BUF_NUM]; 
+   21          
+   22          uint8_t iic_slave_status = 0;   // IIC从机驱动状态
+   23          
+   24          uint8_t iic_salve_init(uint8_t slave_addr, uint8_t *aux_reg, uint16_t reg_count);
+   25          uint8_t iic_slave_start(void);
+   26          uint8_t iic_slave_stop(void);
+   27          uint8_t get_receive_status(void);
+   28          void *get_data_info(void);
+   29          uint8_t confirm_data_process(void);
+   30          
+   31          
+   32          // I2C中断服务程序
+   33          void I2C_Isr() interrupt 24
+   34          {
+   35   1          if (I2CSLST & STAIF)                         // 处理START事件
+   36   1          {
+   37   2              isda = 1;
+   38   2              isma_h = 1;
+   39   2              isma_l = 1;
+   40   2              I2CSLST &= ~0X40;   // 清除标志位
+   41   2          }
+   42   1          else if (I2CSLST & RXIF)                    // 处理RECV事件，SLACKO设置为0
+   43   1          {
+   44   2              if (isda)                               // 从机地址匹配成功，准备数据接收
+   45   2              {
+   46   3                  isda = 0;                           // 处理RECV事件（RECV DEVICE ADDR）
+   47   3              }
+   48   2              else if (isma_h)                        // 接收目标寄存器高位地址（RECV MEMORY ADDR HIGH）
+   49   2              {
+   50   3                  isma_h = 0;
+   51   3                  addr_target = (uint16_t)(I2CRXD << 8);
+   52   3              }
+   53   2              else if (isma_l)                        // 接收目标寄存器低位地址（RECV MEMORY ADDR LOW）
+   54   2              {
+   55   3                  isma_l = 0;
+   56   3                  addr_target += I2CRXD;              
+   57   3                  addr_target_temp = addr_target;
+   58   3                  if(addr_target >= storage_size) I2CTXD = 0xFF;    // 访问越界
+C251 COMPILER V5.60.0,  IIC_Slave                                                          26/11/26  11:06:48  PAGE 2   
+
+   59   3                  else I2CTXD = storage_target[addr_target];        // 预载发送数据
+   60   3              }
+   61   2              else                                    // 处理RECV事件（RECV DATA）
+   62   2              {
+   63   3                  if(addr_target < storage_size)         // 越界检测
+   64   3                  {
+   65   4                      if(buf_count < WRITE_BUF_NUM)  // 缓冲区检测
+   66   4                      {
+   67   5                          if(data_count_temp < WRITE_BUF_ZIZE)
+   68   5                          {
+   69   6                              write_buf_info[buf_tail_pointer].buf[data_count_temp] = I2CRXD;
+   70   6                              data_count_temp++;
+   71   6                          }   
+   72   5                      }
+   73   4                  }
+   74   3              }
+   75   2              I2CSLST &= ~0X20;   // 清除标志位
+   76   2          }
+   77   1          else if (I2CSLST & 0x10)                    // 处理SEND事件
+   78   1          {
+   79   2              if (I2CSLST & SLACKI)                   // 主机未确认，放弃发送
+   80   2              {
+   81   3                  I2CTXD = 0xFF;
+   82   3              }
+   83   2              else                                    // 主机已确认，发送数据
+   84   2              {
+   85   3                  addr_target++;
+   86   3                  if(addr_target >= storage_size) I2CTXD = 0xFF;  // 访问越界
+   87   3                  else
+   88   3                  {
+   89   4                      I2CTXD = storage_target[addr_target];      // 预载发送数据
+   90   4                  } 
+   91   3              }
+   92   2              I2CSLST &= ~0x10;   // 清除标志位
+   93   2          }
+   94   1          else if ((I2CSLST & 0X08))                  // 处理STOP事件
+   95   1          {
+   96   2              
+   97   2              if(data_count_temp != 0)
+   98   2              {
+   99   3                  if(buf_count < WRITE_BUF_NUM)
+  100   3                  {
+  101   4                      write_buf_info[buf_tail_pointer].reg_addr = addr_target_temp;
+  102   4                      write_buf_info[buf_tail_pointer].data_count = data_count_temp;
+  103   4                      write_buf_info[buf_tail_pointer].rec_time = get_systick();      // 记录接收时间，如需提高
+             -效率可将该行注释
+  104   4                      buf_count++;
+  105   4                      buf_tail_pointer++;
+  106   4                      if(buf_tail_pointer == WRITE_BUF_NUM) buf_tail_pointer = 0;
+  107   4                  }
+  108   3                  data_count_temp = 0;
+  109   3              }
+  110   2              I2CSLST &= ~0X08;   // 清除标志位
+  111   2          }
+  112   1      }
+  113          
+  114          /**
+  115           * @name    iic_salve_init
+  116           * @brief   初始化IIC从机驱动
+  117           * @param   slave_addr：从机地址（7位）
+  118           * @param   reg_data_p：存储区指针
+  119           * @param   reg_num：存储区大小（字节）
+  120           * @return  0：成功  1：存储区指针无效  2：存储区大小无效  3：从机地址无效
+  121           * @date    日期：2026.11.19
+  122           * @author  作者：HAO
+  123           * @note    
+C251 COMPILER V5.60.0,  IIC_Slave                                                          26/11/26  11:06:48  PAGE 3   
+
+  124           */
+  125          uint8_t iic_salve_init(uint8_t slave_addr, uint8_t *aux_reg, uint16_t reg_count)
+  126          {
+  127   1          if(aux_reg == NULL)  return 1;      // 判断存储器指针是否有效
+  128   1          else storage_target = aux_reg;
+  129   1      
+  130   1          if(reg_count == 0) return 2;        // 存储器大小不能为0
+  131   1          else storage_size = reg_count;  
+  132   1      
+  133   1          if(slave_addr == 0) return 3;       // 从机地址不能为0
+  134   1      
+  135   1          // 初始化
+  136   1          data_count_temp = 0;
+  137   1          buf_head_pointer = 0;
+  138   1          buf_tail_pointer = 0;
+  139   1          addr_target = 0;
+  140   1          buf_count = 0;
+  141   1      
+  142   1          // 选择功能脚前注意提前配置IO模式
+  143   1          I2C_S1 =1;   //I2C功能脚选择，00:P1.5,P1.4; 01:P2.5,P2.4; 11:P3.2,P3.3
+  144   1          I2C_S0 =1;
+  145   1      
+  146   1          P3M0 |= 0x0c; P3M1 |= 0x0c;         // 配置P3.2、P3.3为开漏输出模式
+  147   1      
+  148   1          I2CCFG = 0x80;                              //使能I2C从机模式
+  149   1          I2CSLADR = (slave_addr << 1);               //设置从机设备地址
+  150   1          I2CSLST = 0x00;
+  151   1          // I2CSLCR = ESTAI | ERXI | ETXI | ESTOI;      //使能从机模式中断
+  152   1          
+  153   1          I2CTXD = storage_target[addr_target];
+  154   1      
+  155   1          iic_slave_status = 1;   // 标记IIC从机已完成初始化
+  156   1      
+  157   1          return 0;
+  158   1      }
+  159          
+  160          /**
+  161           * @name    iic_slave_start
+  162           * @brief   启用IIC从机驱动
+  163           * @param   NULL
+  164           * @return  0：成功  1：IIC从机驱动未初始化  2：未知错误
+  165           * @date    日期：2026.11.19
+  166           * @author  作者：HAO
+  167           * @note    
+  168           */
+  169          uint8_t iic_slave_start(void)
+  170          {
+  171   1          if(iic_slave_status == 0) return 1;
+  172   1          else if(iic_slave_status == 1)
+  173   1          {
+  174   2              isda = 1;                                   //用户变量初始化
+  175   2              isma_h = 1;
+  176   2              isma_l = 1;
+  177   2              
+  178   2              I2CSLCR = ESTAI | ERXI | ETXI | ESTOI;      //使能从机模式中断
+  179   2              return 0;
+  180   2          }
+  181   1          else return 2; 
+  182   1      }
+  183          
+  184          /**
+  185           * @name    iic_slave_stop
+  186           * @brief   停止IIC从机驱动
+  187           * @param   NULL
+  188           * @return  0：成功  1：IIC从机驱动未初始化  2：未知错误
+  189           * @date    日期：2026.11.25
+C251 COMPILER V5.60.0,  IIC_Slave                                                          26/11/26  11:06:48  PAGE 4   
+
+  190           * @author  作者：HAO
+  191           * @note    注意当前停止驱动前没有判断是否存在未完成的IIC传输
+  192           */
+  193          uint8_t iic_slave_stop(void)
+  194          {
+  195   1          if(iic_slave_status == 0) return 1;
+  196   1          else if(iic_slave_status == 1)
+  197   1          {
+  198   2              I2CSLCR = 0x00;      // 关闭从机模式中断
+  199   2              return 0;
+  200   2          }
+  201   1          else return 2; 
+  202   1      }
+  203          
+  204          /**
+  205           * @name    get_receive_status
+  206           * @brief   获取接收数据状态
+  207           * @param   NULL
+  208           * @return  已缓冲的写入请求数量
+  209           * @date    日期：2026.11.19
+  210           * @author  作者：HAO
+  211           * @note    
+  212           */
+  213          uint8_t get_receive_status(void)
+  214          {
+  215   1          return buf_count;
+  216   1      }
+  217          
+  218          /**
+  219           * @name    get_data_info
+  220           * @brief   获取接收数据信息
+  221           * @param   NULL
+  222           * @return  void* 请求结构体指针
+  223           * @date    日期：2026.11.19
+  224           * @author  作者：HAO
+  225           * @note    
+  226           */
+  227          void *get_data_info(void)
+  228          {
+  229   1          if(buf_count == 0) return NULL;
+  230   1          else return &write_buf_info[buf_head_pointer];
+  231   1      }
+  232          
+  233          /**
+  234           * @name    confirm_data_process
+  235           * @brief   确认数据段处理完成
+  236           * @param   NULL
+  237           * @return  0：成功  1：没有待处理的请求
+  238           * @date    日期：2026.11.19
+  239           * @author  作者：HAO
+  240           * @note    
+  241           */
+  242          uint8_t confirm_data_process(void)
+  243          {
+  244   1          if(buf_count)
+  245   1          {
+  246   2              buf_count --;
+  247   2              buf_head_pointer ++;
+  248   2              if(buf_head_pointer == WRITE_BUF_NUM) buf_head_pointer = 0;
+  249   2              return 0;
+  250   2          }
+  251   1          else
+  252   1          {
+  253   2              return 1;
+  254   2          }
+  255   1      }
+C251 COMPILER V5.60.0,  IIC_Slave                                                          26/11/26  11:06:48  PAGE 5   
+
+
+
+Module Information          Static   Overlayable
+------------------------------------------------
+  code size            =       744     ------
+  ecode size           =    ------     ------
+  data size            =    ------     ------
+  idata size           =    ------     ------
+  pdata size           =    ------     ------
+  xdata size           =    ------     ------
+  xdata-const size     =    ------     ------
+  edata size           =       370     ------
+  bit size             =         3     ------
+  ebit size            =    ------     ------
+  bitaddressable size  =    ------     ------
+  ebitaddressable size =    ------     ------
+  far data size        =    ------     ------
+  huge data size       =    ------     ------
+  const size           =    ------     ------
+  hconst size          =         5     ------
+End of Module Information.
+
+
+C251 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
